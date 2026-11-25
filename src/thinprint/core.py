@@ -8,8 +8,10 @@ from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
 
+import manifold3d
 import numpy as np
 from shapely.geometry import box
+from shapely.geometry.polygon import orient
 import trimesh
 
 
@@ -146,9 +148,9 @@ def _svg_for_loader(svg: Path) -> io.BytesIO:
     return io.BytesIO(ET.tostring(tree.getroot(), encoding="utf-8"))
 
 
-def _artwork_mesh(
+def _artwork_solid(
     svg: Path, canvas: Canvas, height: float, simplify: float
-) -> trimesh.Trimesh:
+) -> manifold3d.Manifold:
     try:
         drawing = trimesh.load_path(_svg_for_loader(svg), file_type="svg")
     except Exception as exc:
@@ -165,14 +167,20 @@ def _artwork_mesh(
 
     sx = canvas.output_width / canvas.width
     sy = canvas.output_height / canvas.height
-    meshes: list[trimesh.Trimesh] = []
+    # Keep relief walls microscopically inside the plate walls. Exact contact
+    # at a canvas edge creates coplanar vertical faces during the Boolean and
+    # can yield four-face edges in otherwise valid traced artwork.
+    inset_mm = min(0.001, canvas.output_width / 10000, canvas.output_height / 10000)
+    inset_x = inset_mm / abs(sx)
+    inset_y = inset_mm / abs(sy)
+    contours: list[np.ndarray] = []
     for polygon in polygons:
         polygon = polygon.intersection(
             box(
-                canvas.x,
-                canvas.y,
-                canvas.x + canvas.width,
-                canvas.y + canvas.height,
+                canvas.x + inset_x,
+                canvas.y + inset_y,
+                canvas.x + canvas.width - inset_x,
+                canvas.y + canvas.height - inset_y,
             )
         )
         if simplify > 0:
@@ -184,34 +192,30 @@ def _artwork_mesh(
         if polygon.is_empty or polygon.area <= 0:
             continue
         pieces = list(polygon.geoms) if polygon.geom_type == "MultiPolygon" else [polygon]
-        extrusions = [
-            trimesh.creation.extrude_polygon(piece, height, engine="earcut")
-            for piece in pieces
-            if piece.area > 0
-        ]
-        mesh = trimesh.util.concatenate(extrusions)
-        # Curved paths can leave zero-volume sliver components at a repeated
-        # closing point. They are not printable and upset solid booleans.
-        solids = [part for part in mesh.split(only_watertight=False) if abs(part.volume) > 1e-10]
-        if not solids:
-            continue
-        mesh = trimesh.util.concatenate(solids)
-        # SVG path coordinates are retained by trimesh. Move the viewBox origin
-        # to (0, 0), map it to the requested physical dimensions, and mirror Y
-        # so the model uses the usual Cartesian orientation.
-        matrix = np.array(
-            [
-                [sx, 0.0, 0.0, -canvas.x * sx],
-                [0.0, -sy, 0.0, (canvas.y + canvas.height) * sy],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
-        mesh.apply_transform(matrix)
-        meshes.append(mesh)
-    if not meshes:
+        for piece in pieces:
+            if piece.geom_type != "Polygon" or piece.area <= 0:
+                continue
+            # Positive winding for shells and negative winding for holes lets
+            # Clipper resolve touching and overlapping traced SVG contours
+            # before extrusion, guaranteeing a manifold intermediate solid.
+            piece = orient(piece, sign=1.0)
+            rings = [piece.exterior, *piece.interiors]
+            for ring in rings:
+                points = np.asarray(ring.coords[:-1], dtype=np.float64).copy()
+                points[:, 0] = (points[:, 0] - canvas.x) * sx
+                points[:, 1] = (canvas.y + canvas.height - points[:, 1]) * sy
+                # Mirroring SVG's downward Y axis reverses winding; reverse
+                # each contour so shells remain positive and holes negative.
+                contours.append(points[::-1])
+    if not contours:
         raise ThinPrintError("SVG contains no non-empty closed geometry to emboss")
-    return trimesh.util.concatenate(meshes)
+
+    try:
+        return manifold3d.CrossSection(
+            contours, manifold3d.FillRule.Positive
+        ).extrude(height)
+    except Exception as exc:
+        raise ThinPrintError(f"could not extrude SVG geometry: {exc}") from exc
 
 
 def build_mesh(
@@ -229,19 +233,24 @@ def build_mesh(
         raise ThinPrintError("simplification tolerance cannot be negative")
     canvas = read_canvas(source)
 
-    base = trimesh.creation.box(
-        extents=(canvas.output_width, canvas.output_height, base_thickness)
+    base = manifold3d.Manifold.cube(
+        (canvas.output_width, canvas.output_height, base_thickness)
     )
-    base.apply_translation(
-        (canvas.output_width / 2, canvas.output_height / 2, base_thickness / 2)
-    )
-    # Let the relief overlap the plate. This makes the Boolean robust and
-    # removes hidden coplanar faces from the final STL.
-    artwork = _artwork_mesh(
-        source, canvas, base_thickness + emboss_height, simplify
-    )
+    # Let the relief overlap the top of the plate slightly. Starting it at the
+    # plate bottom would create a large coplanar surface, which can leave
+    # non-manifold seams in complex Boolean results.
+    overlap = min(0.01, base_thickness / 10.0, emboss_height / 10.0)
+    artwork = _artwork_solid(
+        source, canvas, emboss_height + overlap, simplify
+    ).translate((0.0, 0.0, base_thickness - overlap))
     try:
-        result = trimesh.boolean.union([base, artwork], engine="manifold")
+        # Keeping the detailed operand first avoids pinch-edge triangulations
+        # observed when a complex traced relief is unioned into a simple box.
+        solid = artwork + base
+        data = solid.to_mesh()
+        result = trimesh.Trimesh(
+            vertices=data.vert_properties[:, :3], faces=data.tri_verts, process=False
+        )
     except Exception as exc:
         raise ThinPrintError(f"could not join base and emboss: {exc}") from exc
     if result is None or result.is_empty:

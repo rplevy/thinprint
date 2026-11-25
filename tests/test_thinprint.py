@@ -72,3 +72,13 @@ def test_rejects_negative_simplification(tmp_path):
     svg = write_svg(tmp_path, '<rect width="3" height="3"/>')
     with pytest.raises(ThinPrintError, match="cannot be negative"):
         build_mesh(svg, simplify=-0.1)
+
+
+def test_touching_traced_contours_can_be_joined(tmp_path):
+    svg = write_svg(
+        tmp_path,
+        '<path d="M2,2 H6 V6 H2 Z M6,6 H10 V9 H6 Z"/>',
+    )
+    mesh = build_mesh(svg)
+    assert not mesh.is_empty
+    assert mesh.extents == pytest.approx([20, 10, 1.2])
