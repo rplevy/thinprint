@@ -1,0 +1,1 @@
+I would like to make a tool called thinprint. given an svg image, produce an stl object such that the image is extruded and stacked on top of a thin rectangle with the same dimensions, so that the image is an emboss of it. the result should be a very thin object with the embossed image.
