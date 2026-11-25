@@ -22,6 +22,18 @@ def parser() -> argparse.ArgumentParser:
         "--emboss-height", type=float, default=0.4, metavar="MM", help="relief height (default: 0.4)"
     )
     result.add_argument(
+        "--max-width",
+        type=float,
+        metavar="MM",
+        help="maximum model width; preserves aspect ratio",
+    )
+    result.add_argument(
+        "--max-height",
+        type=float,
+        metavar="MM",
+        help="maximum model height; preserves aspect ratio",
+    )
+    result.add_argument(
         "--simplify",
         type=float,
         default=0.02,
@@ -41,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
             base_thickness=args.base_thickness,
             emboss_height=args.emboss_height,
             simplify=args.simplify,
+            max_width=args.max_width,
+            max_height=args.max_height,
         )
     except ThinPrintError as exc:
         print(f"thinprint: error: {exc}", file=sys.stderr)

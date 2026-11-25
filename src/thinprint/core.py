@@ -224,6 +224,8 @@ def build_mesh(
     base_thickness: float = 0.8,
     emboss_height: float = 0.4,
     simplify: float = 0.02,
+    max_width: float | None = None,
+    max_height: float | None = None,
 ) -> trimesh.Trimesh:
     """Build a watertight embossed mesh from *svg*. Dimensions are millimetres."""
     source = Path(svg)
@@ -231,7 +233,25 @@ def build_mesh(
         raise ThinPrintError("base thickness and emboss height must be positive")
     if simplify < 0:
         raise ThinPrintError("simplification tolerance cannot be negative")
+    if max_width is not None and max_width <= 0:
+        raise ThinPrintError("maximum width must be positive")
+    if max_height is not None and max_height <= 0:
+        raise ThinPrintError("maximum height must be positive")
     canvas = read_canvas(source)
+    scale = min(
+        1.0,
+        max_width / canvas.output_width if max_width is not None else 1.0,
+        max_height / canvas.output_height if max_height is not None else 1.0,
+    )
+    if scale < 1.0:
+        canvas = Canvas(
+            canvas.x,
+            canvas.y,
+            canvas.width,
+            canvas.height,
+            canvas.output_width * scale,
+            canvas.output_height * scale,
+        )
 
     base = manifold3d.Manifold.cube(
         (canvas.output_width, canvas.output_height, base_thickness)
@@ -266,6 +286,8 @@ def convert(
     base_thickness: float = 0.8,
     emboss_height: float = 0.4,
     simplify: float = 0.02,
+    max_width: float | None = None,
+    max_height: float | None = None,
 ) -> trimesh.Trimesh:
     """Convert an SVG and atomically write a binary STL."""
     destination = Path(output)
@@ -274,6 +296,8 @@ def convert(
         base_thickness=base_thickness,
         emboss_height=emboss_height,
         simplify=simplify,
+        max_width=max_width,
+        max_height=max_height,
     )
     try:
         data = mesh.export(file_type="stl")

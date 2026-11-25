@@ -82,3 +82,39 @@ def test_touching_traced_contours_can_be_joined(tmp_path):
     mesh = build_mesh(svg)
     assert not mesh.is_empty
     assert mesh.extents == pytest.approx([20, 10, 1.2])
+
+
+def test_max_dimensions_scale_down_proportionally(tmp_path):
+    svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
+    mesh = build_mesh(svg, max_width=13, max_height=7.5)
+    assert mesh.extents == pytest.approx([13, 6.5, 1.2])
+
+
+def test_max_dimensions_do_not_enlarge(tmp_path):
+    svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
+    mesh = build_mesh(svg, max_width=65, max_height=75)
+    assert mesh.extents == pytest.approx([20, 10, 1.2])
+
+
+def test_cli_accepts_max_dimensions(tmp_path, capsys):
+    svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
+    output = tmp_path / "scaled.stl"
+    assert main(
+        [
+            str(svg),
+            "--max-width",
+            "13",
+            "--max-height",
+            "7.5",
+            "-o",
+            str(output),
+        ]
+    ) == 0
+    assert output.exists()
+    assert "13.000 x 6.500" in capsys.readouterr().out
+
+
+def test_rejects_nonpositive_max_dimensions(tmp_path):
+    svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
+    with pytest.raises(ThinPrintError, match="maximum width must be positive"):
+        build_mesh(svg, max_width=0)

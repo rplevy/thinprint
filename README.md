@@ -18,6 +18,23 @@ The defaults produce a 0.8 mm plate and a 0.4 mm relief. Both are configurable:
 thinprint logo.svg --base-thickness 1.0 --emboss-height 0.6
 ```
 
+To fit a printer's build area, set either or both maximum dimensions. The SVG
+is scaled down uniformly, preserving its aspect ratio, and is never enlarged:
+
+```sh
+thinprint image.svg \
+  --max-width 65 \
+  --max-height 75 \
+  --base-thickness 1.0 \
+  --emboss-height 0.6 \
+  --simplify 0.05 \
+  -o image.stl
+```
+
+For example, a 100 × 200 mm SVG constrained to 65 × 75 mm becomes 37.5 × 75
+mm. Thickness and emboss height are absolute millimetre values and are not
+scaled.
+
 Artwork is simplified to a 0.02 mm tolerance by default to keep traced SVGs
 from producing multi-million-triangle files. Adjust the tolerance or disable it:
 
