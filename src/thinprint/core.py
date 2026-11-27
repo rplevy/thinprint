@@ -347,17 +347,148 @@ def _jigsaw_layout(count: int, width: float, height: float) -> tuple[int, int]:
     return rows, columns
 
 
-def _jigsaw_footprints(
-    width: float, height: float, count: int, clearance: float
-) -> tuple[int, int, list]:
+def _jigsaw_edges(rows: int, columns: int, width: float, height: float) -> list:
+    cell_width, cell_height = width / columns, height / rows
+
+    def index(row: int, column: int) -> int:
+        return row * columns + column
+
+    edges = []
+    for row in range(rows):
+        center_y = height - (row + 0.5) * cell_height
+        for boundary in range(1, columns):
+            edges.append(
+                (
+                    index(row, boundary - 1),
+                    index(row, boundary),
+                    "x",
+                    boundary * cell_width,
+                    center_y,
+                )
+            )
+    for boundary in range(1, rows):
+        center_y = height - boundary * cell_height
+        for column in range(columns):
+            edges.append(
+                (
+                    index(boundary - 1, column),
+                    index(boundary, column),
+                    "y",
+                    (column + 0.5) * cell_width,
+                    center_y,
+                )
+            )
+    return edges
+
+
+def _balanced_tab_owners(
+    rows: int,
+    columns: int,
+    width: float,
+    height: float,
+    radius: float,
+    max_piece_width: float | None = None,
+    max_piece_height: float | None = None,
+) -> tuple[list[int], list[tuple[float, float]]]:
+    """Orient shared edges to balance protruding tabs between pieces."""
+    edges = _jigsaw_edges(rows, columns, width, height)
+    piece_count = rows * columns
+    cell_width, cell_height = width / columns, height / rows
+
+    def sizes(owners: list[int]) -> list[tuple[float, float]]:
+        x_tabs, y_tabs = [0] * piece_count, [0] * piece_count
+        for edge, owner_choice in zip(edges, owners):
+            owner = edge[owner_choice]
+            if edge[2] == "x":
+                x_tabs[owner] += 1
+            else:
+                y_tabs[owner] += 1
+        return [
+            (cell_width + radius * x_tabs[i], cell_height + radius * y_tabs[i])
+            for i in range(piece_count)
+        ]
+
+    def objective(owners: list[int]) -> tuple:
+        dimensions = sizes(owners)
+        tab_counts = [0] * piece_count
+        for edge, owner_choice in zip(edges, owners):
+            tab_counts[edge[owner_choice]] += 1
+        areas = [piece_width * piece_height for piece_width, piece_height in dimensions]
+        fit = max(
+            max(
+                piece_width / max_piece_width if max_piece_width else 0.0,
+                piece_height / max_piece_height if max_piece_height else 0.0,
+            )
+            for piece_width, piece_height in dimensions
+        )
+        balance = (
+            max(tab_counts, default=0),
+            sum(count * count for count in tab_counts),
+            round(max(areas, default=0) - min(areas, default=0), 9),
+        )
+        return (round(fit, 12), *balance) if (max_piece_width or max_piece_height) else balance
+
+    if not edges:
+        return [], [(cell_width, cell_height)]
+
+    if len(edges) <= 16:
+        owners = min(
+            ([((mask >> edge_index) & 1) for edge_index in range(len(edges))]
+             for mask in range(1 << len(edges))),
+            key=objective,
+        )
+    else:
+        starts = [
+            [0] * len(edges),
+            [1] * len(edges),
+            [edge_index % 2 for edge_index in range(len(edges))],
+            [(edge_index // 2) % 2 for edge_index in range(len(edges))],
+        ]
+        solutions = []
+        for owners in starts:
+            owners = owners[:]
+            improved = True
+            while improved:
+                improved = False
+                current = objective(owners)
+                for edge_index in range(len(edges)):
+                    owners[edge_index] ^= 1
+                    candidate = objective(owners)
+                    if candidate < current:
+                        current = candidate
+                        improved = True
+                    else:
+                        owners[edge_index] ^= 1
+            solutions.append(owners)
+        owners = min(solutions, key=objective)
+    return owners, sizes(owners)
+
+
+def _jigsaw_grid_footprints(
+    width: float,
+    height: float,
+    rows: int,
+    columns: int,
+    clearance: float,
+    max_piece_width: float | None = None,
+    max_piece_height: float | None = None,
+) -> tuple[list, list[tuple[float, float]]]:
     if clearance < 0:
         raise ThinPrintError("jigsaw clearance cannot be negative")
-    rows, columns = _jigsaw_layout(count, width, height)
     cell_width = width / columns
     cell_height = height / rows
     radius = min(cell_width, cell_height) * 0.18
-    if radius <= clearance:
+    if rows * columns > 1 and radius <= clearance:
         raise ThinPrintError("jigsaw pieces are too small for the requested clearance")
+    owners, dimensions = _balanced_tab_owners(
+        rows,
+        columns,
+        width,
+        height,
+        radius,
+        max_piece_width,
+        max_piece_height,
+    )
 
     # Extend outer cutter edges beyond the model to avoid coplanar Boolean
     # faces. Intersections with the model restore the exact outer dimensions.
@@ -378,43 +509,78 @@ def _jigsaw_footprints(
                 )
             )
 
-    def index(row: int, column: int) -> int:
-        return row * columns + column
-
     # A circle centred on a shared edge contributes one semicircle to the tab
     # owner. Subtracting a slightly larger circle from its neighbour creates a
     # matching socket with printable clearance.
-    for row in range(rows):
-        center_y = height - (row + 0.5) * cell_height
-        for boundary in range(1, columns):
-            center_x = boundary * cell_width
-            tab = Point(center_x, center_y).buffer(radius, resolution=16)
-            socket = Point(center_x, center_y).buffer(
-                radius + clearance, resolution=16
-            )
-            left, right = index(row, boundary - 1), index(row, boundary)
-            tab_owner, socket_owner = (
-                (left, right) if (row + boundary) % 2 == 0 else (right, left)
-            )
-            pieces[tab_owner] = pieces[tab_owner].union(tab)
-            pieces[socket_owner] = pieces[socket_owner].difference(socket)
+    for edge, owner_choice in zip(
+        _jigsaw_edges(rows, columns, width, height), owners
+    ):
+        first, second, _, center_x, center_y = edge
+        tab = Point(center_x, center_y).buffer(radius, resolution=16)
+        socket = Point(center_x, center_y).buffer(radius + clearance, resolution=16)
+        tab_owner = edge[owner_choice]
+        socket_owner = second if tab_owner == first else first
+        pieces[tab_owner] = pieces[tab_owner].union(tab)
+        pieces[socket_owner] = pieces[socket_owner].difference(socket)
 
-    for boundary in range(1, rows):
-        center_y = height - boundary * cell_height
-        for column in range(columns):
-            center_x = (column + 0.5) * cell_width
-            tab = Point(center_x, center_y).buffer(radius, resolution=16)
-            socket = Point(center_x, center_y).buffer(
-                radius + clearance, resolution=16
-            )
-            above, below = index(boundary - 1, column), index(boundary, column)
-            tab_owner, socket_owner = (
-                (above, below) if (boundary + column) % 2 == 0 else (below, above)
-            )
-            pieces[tab_owner] = pieces[tab_owner].union(tab)
-            pieces[socket_owner] = pieces[socket_owner].difference(socket)
+    return pieces, dimensions
 
+
+def _jigsaw_footprints(
+    width: float, height: float, count: int, clearance: float
+) -> tuple[int, int, list]:
+    rows, columns = _jigsaw_layout(count, width, height)
+    pieces, _ = _jigsaw_grid_footprints(
+        width, height, rows, columns, clearance
+    )
     return rows, columns, pieces
+
+
+def _jigsaw_layout_for_limits(
+    width: float,
+    height: float,
+    clearance: float,
+    max_piece_width: float | None,
+    max_piece_height: float | None,
+) -> tuple[int, int]:
+    if max_piece_width is not None and max_piece_width <= 0:
+        raise ThinPrintError("maximum piece width must be positive")
+    if max_piece_height is not None and max_piece_height <= 0:
+        raise ThinPrintError("maximum piece height must be positive")
+    if max_piece_width is None and max_piece_height is None:
+        raise ThinPrintError("a maximum piece width or height is required")
+
+    for count in range(1, 401):
+        candidates = []
+        for rows in range(1, count + 1):
+            if count % rows:
+                continue
+            columns = count // rows
+            radius = min(width / columns, height / rows) * 0.18
+            if count > 1 and radius <= clearance:
+                continue
+            _, dimensions = _balanced_tab_owners(
+                rows,
+                columns,
+                width,
+                height,
+                radius,
+                max_piece_width,
+                max_piece_height,
+            )
+            if all(
+                (max_piece_width is None or piece_width <= max_piece_width + 1e-9)
+                and (max_piece_height is None or piece_height <= max_piece_height + 1e-9)
+                for piece_width, piece_height in dimensions
+            ):
+                cell_aspect = (width / columns) / (height / rows)
+                candidates.append(
+                    (abs(math.log(cell_aspect)), abs(rows - columns), rows, columns)
+                )
+        if candidates:
+            _, _, rows, columns = min(candidates)
+            return rows, columns
+    raise ThinPrintError("could not fit jigsaw pieces within the requested dimensions")
 
 
 def _footprint_solid(geometry, height: float) -> manifold3d.Manifold:
@@ -438,7 +604,7 @@ def _footprint_solid(geometry, height: float) -> manifold3d.Manifold:
 
 def build_jigsaw_meshes(
     svg: str | Path,
-    jigsaw_cut: float,
+    jigsaw_cut: float | None = None,
     *,
     base_thickness: float = 0.8,
     emboss_height: float = 0.4,
@@ -446,9 +612,18 @@ def build_jigsaw_meshes(
     max_width: float | None = None,
     max_height: float | None = None,
     jigsaw_clearance: float = 0.15,
+    max_piece_width: float | None = None,
+    max_piece_height: float | None = None,
 ) -> list[trimesh.Trimesh]:
     """Build separate, interlocking pieces in top-to-bottom row-major order."""
-    count = _jigsaw_piece_count(jigsaw_cut)
+    if jigsaw_cut is not None and (
+        max_piece_width is not None or max_piece_height is not None
+    ):
+        raise ThinPrintError(
+            "use either jigsaw cut or maximum piece dimensions, not both"
+        )
+    if jigsaw_cut is None and max_piece_width is None and max_piece_height is None:
+        raise ThinPrintError("jigsaw output needs a cut fraction or piece dimensions")
     solid, canvas = _build_solid(
         svg,
         base_thickness=base_thickness,
@@ -457,8 +632,27 @@ def build_jigsaw_meshes(
         max_width=max_width,
         max_height=max_height,
     )
-    _, _, footprints = _jigsaw_footprints(
-        canvas.output_width, canvas.output_height, count, jigsaw_clearance
+    if jigsaw_cut is not None:
+        count = _jigsaw_piece_count(jigsaw_cut)
+        rows, columns = _jigsaw_layout(
+            count, canvas.output_width, canvas.output_height
+        )
+    else:
+        rows, columns = _jigsaw_layout_for_limits(
+            canvas.output_width,
+            canvas.output_height,
+            jigsaw_clearance,
+            max_piece_width,
+            max_piece_height,
+        )
+    footprints, _ = _jigsaw_grid_footprints(
+        canvas.output_width,
+        canvas.output_height,
+        rows,
+        columns,
+        jigsaw_clearance,
+        max_piece_width,
+        max_piece_height,
     )
     total_height = base_thickness + emboss_height
     meshes = []
@@ -490,7 +684,7 @@ def jigsaw_output_paths(output: str | Path, count: int) -> list[Path]:
 def convert_jigsaw(
     svg: str | Path,
     output: str | Path,
-    jigsaw_cut: float,
+    jigsaw_cut: float | None = None,
     **kwargs,
 ) -> list[tuple[Path, trimesh.Trimesh]]:
     """Build and atomically write each jigsaw piece as a binary STL."""

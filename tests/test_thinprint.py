@@ -9,6 +9,8 @@ from thinprint.core import (
     ThinPrintError,
     _jigsaw_footprints,
     _jigsaw_layout,
+    _jigsaw_layout_for_limits,
+    _jigsaw_grid_footprints,
     build_jigsaw_meshes,
     build_mesh,
     read_canvas,
@@ -141,6 +143,17 @@ def test_jigsaw_footprints_have_tabs_and_nonoverlapping_sockets():
         assert left.intersection(right).area == pytest.approx(0, abs=1e-9)
 
 
+def test_jigsaw_tabs_are_balanced_between_pieces():
+    _, dimensions = _jigsaw_grid_footprints(20, 10, 2, 2, 0.15)
+    # Every 2x2 piece owns exactly one tab rather than alternating between
+    # pieces with two tabs and pieces with none.
+    assert sorted(dimensions) == [(10.0, 5.9), (10.0, 5.9), (10.9, 5.0), (10.9, 5.0)]
+
+
+def test_jigsaw_layout_can_be_selected_from_piece_limits():
+    assert _jigsaw_layout_for_limits(20, 10, 0.15, 6, 6) == (2, 4)
+
+
 def test_builds_separate_jigsaw_meshes(tmp_path):
     svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
     pieces = build_jigsaw_meshes(svg, 0.25, jigsaw_clearance=0.1)
@@ -168,3 +181,30 @@ def test_jigsaw_rejects_non_unit_fraction(tmp_path, capsys):
     svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
     assert main([str(svg), "--jigsaw-cut", "0.3"]) == 1
     assert "unit fraction" in capsys.readouterr().err
+
+
+def test_jigsaw_cli_chooses_piece_count_from_maximum_dimensions(tmp_path, capsys):
+    svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
+    output = tmp_path / "bounded.stl"
+    assert main(
+        [
+            str(svg),
+            "--max-piece-width",
+            "6",
+            "--max-piece-height",
+            "6",
+            "-o",
+            str(output),
+        ]
+    ) == 0
+    files = sorted(tmp_path.glob("bounded-*.stl"))
+    assert len(files) == 8
+    assert "wrote 8 interlocking pieces" in capsys.readouterr().out
+
+
+def test_jigsaw_cut_and_piece_limits_are_mutually_exclusive(tmp_path, capsys):
+    svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
+    assert main(
+        [str(svg), "--jigsaw-cut", "0.25", "--max-piece-width", "6"]
+    ) == 1
+    assert "either jigsaw cut or maximum piece dimensions" in capsys.readouterr().err

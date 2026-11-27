@@ -71,6 +71,28 @@ material if necessary:
 thinprint image.svg --jigsaw-cut 0.125 --jigsaw-clearance 0.2 -o puzzle.stl
 ```
 
+Tab ownership is balanced across the grid so pieces have similar bounding
+dimensions instead of concentrating protruding tabs on a few pieces.
+
+Alternatively, let Thinprint choose the smallest sufficient piece count and
+layout from the printer's per-piece limits. Tab protrusions are included in the
+calculation:
+
+```sh
+thinprint image.svg \
+  --max-width 215 \
+  --max-height 279 \
+  --max-piece-width 65 \
+  --max-piece-height 75 \
+  --base-thickness 1.0 \
+  --emboss-height 0.6 \
+  --simplify 0.05 \
+  -o puzzle.stl
+```
+
+Either maximum may be omitted. `--jigsaw-cut` and the `--max-piece-*` options
+are alternative modes and cannot be used together.
+
 Each piece is moved to its own XY origin for straightforward slicer placement.
 The jigsaw value must be a unit fraction whose reciprocal is a whole number.
 

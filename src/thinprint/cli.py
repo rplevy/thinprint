@@ -53,6 +53,18 @@ def parser() -> argparse.ArgumentParser:
         metavar="MM",
         help="extra socket clearance for jigsaw tabs (default: 0.15)",
     )
+    result.add_argument(
+        "--max-piece-width",
+        type=float,
+        metavar="MM",
+        help="choose a jigsaw layout whose pieces do not exceed this width",
+    )
+    result.add_argument(
+        "--max-piece-height",
+        type=float,
+        metavar="MM",
+        help="choose a jigsaw layout whose pieces do not exceed this height",
+    )
     return result
 
 
@@ -67,12 +79,19 @@ def main(argv: list[str] | None = None) -> int:
             max_width=args.max_width,
             max_height=args.max_height,
         )
-        if args.jigsaw_cut is not None:
+        jigsaw_enabled = (
+            args.jigsaw_cut is not None
+            or args.max_piece_width is not None
+            or args.max_piece_height is not None
+        )
+        if jigsaw_enabled:
             pieces = convert_jigsaw(
                 args.input,
                 output,
                 args.jigsaw_cut,
                 jigsaw_clearance=args.jigsaw_clearance,
+                max_piece_width=args.max_piece_width,
+                max_piece_height=args.max_piece_height,
                 **options,
             )
         else:
@@ -80,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     except ThinPrintError as exc:
         print(f"thinprint: error: {exc}", file=sys.stderr)
         return 1
-    if args.jigsaw_cut is not None:
+    if jigsaw_enabled:
         print(f"wrote {len(pieces)} interlocking pieces:")
         for path, piece in pieces:
             size = piece.extents
