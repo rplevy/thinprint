@@ -5,7 +5,14 @@ import struct
 import pytest
 
 from thinprint.cli import main
-from thinprint.core import ThinPrintError, build_mesh, read_canvas
+from thinprint.core import (
+    ThinPrintError,
+    _jigsaw_footprints,
+    _jigsaw_layout,
+    build_jigsaw_meshes,
+    build_mesh,
+    read_canvas,
+)
 
 
 def write_svg(tmp_path, body, root='viewBox="0 0 20 10"'):
@@ -118,3 +125,46 @@ def test_rejects_nonpositive_max_dimensions(tmp_path):
     svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
     with pytest.raises(ThinPrintError, match="maximum width must be positive"):
         build_mesh(svg, max_width=0)
+
+
+def test_jigsaw_layout_uses_physical_aspect_ratio():
+    assert _jigsaw_layout(8, 65, 75) == (4, 2)
+    assert _jigsaw_layout(4, 65, 75) == (2, 2)
+
+
+def test_jigsaw_footprints_have_tabs_and_nonoverlapping_sockets():
+    rows, columns, pieces = _jigsaw_footprints(20, 10, 4, 0.15)
+    assert (rows, columns) == (2, 2)
+    assert len(pieces) == 4
+    assert any(piece.bounds[2] - piece.bounds[0] > 5 for piece in pieces)
+    for left, right in zip(pieces, pieces[1:]):
+        assert left.intersection(right).area == pytest.approx(0, abs=1e-9)
+
+
+def test_builds_separate_jigsaw_meshes(tmp_path):
+    svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
+    pieces = build_jigsaw_meshes(svg, 0.25, jigsaw_clearance=0.1)
+    assert len(pieces) == 4
+    assert all(not piece.is_empty for piece in pieces)
+    assert all(piece.extents[2] == pytest.approx(1.2) for piece in pieces)
+    assert all(piece.bounds[0][0] == pytest.approx(0) for piece in pieces)
+    assert all(piece.bounds[0][1] == pytest.approx(0) for piece in pieces)
+
+
+def test_jigsaw_cli_writes_numbered_files(tmp_path, capsys):
+    svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
+    output = tmp_path / "puzzle.stl"
+    assert main([str(svg), "--jigsaw-cut", "0.25", "-o", str(output)]) == 0
+    assert not output.exists()
+    for number in range(1, 5):
+        path = tmp_path / f"puzzle-{number:02d}.stl"
+        data = path.read_bytes()
+        triangle_count = struct.unpack("<I", data[80:84])[0]
+        assert len(data) == 84 + triangle_count * 50
+    assert "wrote 4 interlocking pieces" in capsys.readouterr().out
+
+
+def test_jigsaw_rejects_non_unit_fraction(tmp_path, capsys):
+    svg = write_svg(tmp_path, '<rect width="20" height="10"/>')
+    assert main([str(svg), "--jigsaw-cut", "0.3"]) == 1
+    assert "unit fraction" in capsys.readouterr().err

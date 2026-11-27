@@ -43,6 +43,37 @@ thinprint detailed.svg --simplify 0.01
 thinprint detailed.svg --simplify 0
 ```
 
+## Interlocking pieces
+
+Use `--jigsaw-cut` with the fraction represented by each piece. For example,
+`0.25` creates four pieces and `0.125` creates eight:
+
+```sh
+thinprint image.svg \
+  --max-width 260 \
+  --max-height 300 \
+  --base-thickness 1.0 \
+  --emboss-height 0.6 \
+  --simplify 0.05 \
+  --jigsaw-cut 0.25 \
+  -o filename.stl
+```
+
+This writes `filename-01.stl` through `filename-04.stl`; it does not write
+`filename.stl`. The grid is selected automatically based on the model's aspect
+ratio, and pieces are numbered from the top-left in row-major order. Circular
+tabs and matching sockets alternate along internal edges.
+
+Sockets have 0.15 mm of clearance by default. Adjust this for the printer and
+material if necessary:
+
+```sh
+thinprint image.svg --jigsaw-cut 0.125 --jigsaw-clearance 0.2 -o puzzle.stl
+```
+
+Each piece is moved to its own XY origin for straightforward slicer placement.
+The jigsaw value must be a unit fraction whose reciprocal is a whole number.
+
 The output uses millimetres. Explicit SVG units (`mm`, `cm`, `in`, `px`, `pt`,
 `pc`, and `q`) are converted to millimetres. If a `viewBox` has no explicit
 physical width and height, one SVG user unit is treated as one millimetre.

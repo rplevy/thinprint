@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from .core import ThinPrintError, convert
+from .core import ThinPrintError, convert, convert_jigsaw
 
 
 def parser() -> argparse.ArgumentParser:
@@ -40,6 +40,19 @@ def parser() -> argparse.ArgumentParser:
         metavar="MM",
         help="path simplification tolerance; 0 disables it (default: 0.02)",
     )
+    result.add_argument(
+        "--jigsaw-cut",
+        type=float,
+        metavar="FRACTION",
+        help="split into interlocking files (0.25 = 4 pieces, 0.125 = 8)",
+    )
+    result.add_argument(
+        "--jigsaw-clearance",
+        type=float,
+        default=0.15,
+        metavar="MM",
+        help="extra socket clearance for jigsaw tabs (default: 0.15)",
+    )
     return result
 
 
@@ -47,21 +60,38 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     output = args.output or args.input.with_suffix(".stl")
     try:
-        mesh = convert(
-            args.input,
-            output,
+        options = dict(
             base_thickness=args.base_thickness,
             emboss_height=args.emboss_height,
             simplify=args.simplify,
             max_width=args.max_width,
             max_height=args.max_height,
         )
+        if args.jigsaw_cut is not None:
+            pieces = convert_jigsaw(
+                args.input,
+                output,
+                args.jigsaw_cut,
+                jigsaw_clearance=args.jigsaw_clearance,
+                **options,
+            )
+        else:
+            mesh = convert(args.input, output, **options)
     except ThinPrintError as exc:
         print(f"thinprint: error: {exc}", file=sys.stderr)
         return 1
-    size = mesh.extents
-    print(
-        f"wrote {output} ({size[0]:.3f} x {size[1]:.3f} x {size[2]:.3f} mm, "
-        f"{len(mesh.faces)} triangles)"
-    )
+    if args.jigsaw_cut is not None:
+        print(f"wrote {len(pieces)} interlocking pieces:")
+        for path, piece in pieces:
+            size = piece.extents
+            print(
+                f"  {path} ({size[0]:.3f} x {size[1]:.3f} x {size[2]:.3f} mm, "
+                f"{len(piece.faces)} triangles)"
+            )
+    else:
+        size = mesh.extents
+        print(
+            f"wrote {output} ({size[0]:.3f} x {size[1]:.3f} x {size[2]:.3f} mm, "
+            f"{len(mesh.faces)} triangles)"
+        )
     return 0
