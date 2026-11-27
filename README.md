@@ -110,3 +110,7 @@ physical width and height, one SVG user unit is treated as one millimetre.
 
 The STL is binary and the base and relief are Boolean-unioned into one
 watertight mesh.
+
+## License
+
+MIT License. Copyright (c) 2026 Robert P. Levy.
